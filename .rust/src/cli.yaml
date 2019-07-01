@@ -1,0 +1,11 @@
+name: cupola
+version: "0.1"
+author: Brian Leishman <brian@stumpyinc.com>
+about: A tool to do things with PST files that doesn't make you hate your life
+args:
+    - INPUT:
+        short: i
+        long: input
+        help: Sets an input PST file
+        required: true
+        takes_value: true
