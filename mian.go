@@ -5,9 +5,10 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"os"
 
-	"github.com/davecgh/go-spew/spew"
 	humanize "github.com/dustin/go-humanize"
 )
 
@@ -89,27 +90,93 @@ func main() {
 				check(binary.Read(itemsReader, binary.LittleEndian, &items))
 
 				for _, item := range items {
-					// if items[i].TreeIID != 0 {
-					// 	// spew.Dump(search(f, h.OffsetIndex1, items[i].TreeIID))
-					// 	os.Exit(0)
-					// }
+					item.DescIID = clearBitUint64(item.DescIID, 0)
+
+					if item.TreeIID != 0 {
+						continue
+					}
 					if item.DescIID != 0 {
-						fmt.Println("DescIID:", item.DescIID)
+						offset, size, err := pst64SearchIndex1(f, h.OffsetIndex1, item.DescIID)
+						// fmt.Println("Found offset:", offset, "size:", size)
+						check(err)
 
-						stack := make([]uint64, 0)
-						spew.Dump(pst64SearchIndex1(f, h.OffsetIndex1, item.DescIID, stack))
+						_, err = f.Seek(int64(offset), 0)
+						check(err)
 
-						// _, err := f.Seek(int64(item.DescIID), 0)
-						// check(err)
+						b := make([]byte, size)
+						_, err = io.ReadFull(f, b)
+						check(err)
 
-						// var desc pstAssociatedDescriptorItem
-						// check(binary.Read(f, binary.LittleEndian, &desc))
+						decrypt(b)
 
-						// spew.Dump(desc)
+						var desc pstAssociatedDescriptorItem
+						r := bytes.NewReader(b)
+						check(binary.Read(r, binary.LittleEndian, &desc))
+
+						// fmt.Printf("Signature: 0x%04x, IndexOffset: 0x%04x, B5Offset: 0x%04x\n", desc.Signature, desc.IndexOffset, desc.B5Offset)
+
+						switch desc.Signature {
+						case 0xbcec:
+							_, err = r.Seek(int64(desc.IndexOffset), 0)
+							check(err)
+
+							// spew.Dump(b)
+
+							internal := desc.B5Offset|0x0f == desc.B5Offset
+							desc.B5Offset >>= 4
+							if internal {
+								log.Println("low order bits are set!!! the data is somewhere else!!1")
+							} else {
+								// log.Println("low order bits are NOT set! thakn god lol")
+
+								_, err = r.Seek(int64(uint32(desc.IndexOffset)+desc.B5Offset+2), 0)
+								check(err)
+
+								var b5Pair pstDataIndex1Pair
+								check(binary.Read(r, binary.LittleEndian, &b5Pair))
+								// spew.Dump(b5Pair)
+
+								_, err = r.Seek(int64(b5Pair.Start), 0)
+								check(err)
+
+								var b5 pstDataIndex1B5
+								check(binary.Read(r, binary.LittleEndian, &b5))
+								// spew.Dump(b5)
+
+								b5.DescOffset >>= 4
+								_, err = r.Seek(int64(uint32(desc.IndexOffset)+b5.DescOffset+2), 0)
+								check(err)
+
+								var descPair pstDataIndex1Pair
+								check(binary.Read(r, binary.LittleEndian, &descPair))
+								// spew.Dump(descPair)
+
+								_, err = r.Seek(int64(descPair.Start), 0)
+								check(err)
+
+								switch b5.DataSize {
+								case 6:
+									mapiEntries := make([]pstDataIndex1MAPI, (descPair.End-descPair.Start)/8)
+									check(binary.Read(r, binary.LittleEndian, mapiEntries))
+									for _, m := range mapiEntries {
+										fmt.Println(m)
+										v, err := getMapiItemValue(desc, r, m)
+										check(err)
+										fmt.Println("value:", v)
+									}
+								default:
+									panic(fmt.Errorf("unhandled b5.DataSize of 0x%x for block with I_ID of 0x%x", b5.DataSize, item.DescIID))
+								}
+							}
+							// spew.Dump(items)
+						default:
+							panic(fmt.Errorf("unhandled associated descriptor item with signature 0x%x for block with I_ID of 0x%x", desc.Signature, item.DescIID))
+						}
 
 						os.Exit(0)
 					}
 				}
+				os.Exit(0)
 			}
 		}
 
